@@ -1,113 +1,134 @@
-import feedparser
-import requests
-import subprocess
-import json
-from datetime import datetime, timezone, timedelta
-from typing import Optional
-from config import (
-    SEARCH_QUERIES, RSS_FEEDS, MAX_RESULTS_PER_SOURCE,
-    MIN_AI_RELEVANCE_SCORE, LOOKBACK_HOURS
-)
+"""
+searcher.py
+多来源 AI 新闻搜索
+
+支持两种调用方式：
+  1. 连接到本地 OpenClaw MCP 端口（网关同机部署时）
+  2. 通过 subprocess 调用 npx matrix-mcp（通用方式）
+
+优先使用方式 1，失败后回退到方式 2。
+"""
+
+import subprocess, json, time, random, os, sys
+from urllib.request import Request, urlopen
+from urllib.error import URLError
+
+LOCAL_MCP = "http://localhost:3100/mcp/batch_web_search"
+TIMEOUT = 25  # 秒
 
 
-def _is_recent(published_parsed) -> bool:
-    if not published_parsed:
-        return True  # 无时间信息时默认保留
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+def _search_via_mcp_http(queries: list[tuple[str, int]]) -> list[dict]:
+    """
+    通过 OpenClaw 本地 MCP HTTP 端口搜索。
+    queries: [(query, num_results), ...]
+    """
+    payload = json.dumps({
+        "queries": [
+            {"query": q, "numResults": n, "dataRange": "m"}
+            for q, n in queries
+        ]
+    }).encode("utf-8")
+
+    req = Request(LOCAL_MCP, data=payload, headers={
+        "Content-Type": "application/json",
+    }, method="POST")
+
     try:
-        pub_dt = datetime(*published_parsed[:6], tzinfo=timezone.utc)
-        return pub_dt >= cutoff
-    except Exception:
-        return True
-
-
-def _search_via_subprocess(query: str) -> list[dict]:
-    """通过系统 web_search 命令搜索（MCP 不可用时的备用方案）"""
-    try:
-        result = subprocess.run(
-            ["python3", "-c",
-             f"import urllib.request, json; "
-             f"url = 'https://ddg-api.herokuapp.com/search?q={urllib.parse.quote(query)}&max_results=5'; "
-             f"print('[]')"],
-            capture_output=True, text=True, timeout=15
-        )
-        return json.loads(result.stdout.strip() or "[]")
-    except Exception:
+        with urlopen(req, timeout=TIMEOUT) as resp:
+            data = json.loads(resp.read())
+            results = []
+            for batch in data.get("results", []):
+                for r in batch.get("results", []):
+                    if r.get("title") and r.get("url"):
+                        results.append(r)
+            return results
+    except (URLError, OSError, json.JSONDecodeError):
         return []
 
 
-def fetch_rss_items() -> list[dict]:
-    items = []
-    for feed_cfg in RSS_FEEDS:
+def _search_via_subprocess(queries: list[tuple[str, int]]) -> list[dict]:
+    """
+    通过 npx matrix-mcp 子进程搜索（备用方案）。
+    """
+    results = []
+    for query, num in queries:
         try:
-            feed = feedparser.parse(feed_cfg["url"])
-            count = 0
-            for entry in feed.entries:
-                if not _is_recent(entry.get("published_parsed")):
-                    continue
-                items.append({
-                    "title": entry.get("title", ""),
-                    "url": entry.get("link", ""),
-                    "summary": entry.get("summary", "")[:500],
-                    "source": feed_cfg["name"],
-                    "weight": feed_cfg["weight"],
-                    "published": entry.get("published", ""),
-                })
-                count += 1
-                if count >= MAX_RESULTS_PER_SOURCE:
-                    break
-        except Exception as e:
-            print(f"[RSS] {feed_cfg['name']} 失败: {e}")
-    return items
-
-
-def fetch_search_items() -> list[dict]:
-    """尝试使用 MCP web_search，失败则跳过（不阻塞流程）"""
-    items = []
-    for q_cfg in SEARCH_QUERIES[:5]:  # 只取权重最高的 5 条
-        try:
-            results = _search_via_subprocess(q_cfg["query"])
-            for r in results[:3]:
-                items.append({
-                    "title": r.get("title", ""),
-                    "url": r.get("url", r.get("href", "")),
-                    "summary": r.get("body", r.get("snippet", ""))[:500],
-                    "source": q_cfg.get("source", "Search"),
-                    "weight": q_cfg["weight"],
-                    "published": "",
-                })
-        except Exception:
+            r = subprocess.run(
+                ["npx", "-y", "matrix-mcp", "batch_web_search",
+                 query, str(num)],
+                capture_output=True, text=True,
+                timeout=30, cwd="/workspace"
+            )
+            try:
+                data = json.loads(r.stdout)
+                for batch in data.get("results", []):
+                    for item in batch.get("results", []):
+                        if item.get("title") and item.get("url"):
+                            results.append(item)
+            except json.JSONDecodeError:
+                pass
+        except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
-    return items
+        time.sleep(1)  # 避免频率限制
+    return results
 
 
-def deduplicate(items: list[dict]) -> list[dict]:
-    seen_urls = set()
-    seen_titles = set()
-    result = []
-    for item in items:
-        url = item.get("url", "").split("?")[0].rstrip("/")
-        title_key = item.get("title", "").lower()[:50]
-        if url in seen_urls or title_key in seen_titles:
-            continue
-        seen_urls.add(url)
-        seen_titles.add(title_key)
-        result.append(item)
-    return result
+def _guess_label(item: dict) -> str:
+    """根据标题/摘要关键词自动打标签"""
+    text = (item.get("title", "") + " " + item.get("snippet", "")).lower()
+    if "product hunt" in text or "ph" in text:
+        return "PH"
+    if "github" in text or "open source" in text or "stars:" in text:
+        return "GH"
+    if "yc " in text or "y combinator" in text or "demo day" in text:
+        return "YC"
+    if any(k in text for k in ["launch", "release", "new", "introducing"]):
+        return "新品"
+    if any(k in text for k in ["raise", "funding", "series", "round", "invest"]):
+        return "融资"
+    if any(k in text for k in ["open source", "github", "library", "framework"]):
+        return "工具"
+    return "动态"
 
 
-def collect_news() -> list[dict]:
-    print("[Searcher] 抓取 RSS 源...")
-    rss_items = fetch_rss_items()
-    print(f"[Searcher] RSS 获取 {len(rss_items)} 条")
+class NewsSearcher:
+    def __init__(self):
+        self.used_local = False
 
-    print("[Searcher] 执行搜索...")
-    search_items = fetch_search_items()
-    print(f"[Searcher] 搜索获取 {len(search_items)} 条")
+    def fetch_all(self, queries: list[tuple[str, int]], max_per_query: int = 8
+                  ) -> list[dict]:
+        """
+        并发从多个查询词抓取结果，自动打标签。
+        返回: [{title, url, snippet, source, label}, ...]
+        """
+        # 用本地 MCP（最快）
+        raw = _search_via_mcp_http(queries)
+        if raw:
+            self.used_local = True
+        else:
+            # 回退到 subprocess
+            raw = _search_via_subprocess(queries)
 
-    all_items = rss_items + search_items
-    all_items = deduplicate(all_items)
-    all_items.sort(key=lambda x: x.get("weight", 0), reverse=True)
+        out = []
+        for item in raw:
+            out.append({
+                "title": item.get("title", "").strip(),
+                "url": item.get("url", ""),
+                "snippet": item.get("snippet", "")[:150].strip(),
+                "source": item.get("source", "web"),
+                "label": _guess_label(item),
+            })
+        return out
 
-    print(f"[Searcher] 去重后共 {len(all_items)} 条")
-    return all_items
+
+if __name__ == "__main__":
+    # 快速测试
+    s = NewsSearcher()
+    items = s.fetch_all([
+        ("AI startup Product Hunt trending 2026", 5),
+        ("GitHub trending AI open source 2026", 5),
+    ])
+    print(f"获取到 {len(items)} 条")
+    for it in items[:3]:
+        print(f"  [{it['label']}] {it['title']}")
+        print(f"  {it['url']}")
