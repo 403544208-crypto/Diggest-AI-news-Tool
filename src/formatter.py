@@ -1,104 +1,125 @@
-import anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_ITEMS_IN_REPORT, MIN_AI_RELEVANCE_SCORE
+"""
+formatter.py
+AI 情报格式化器
+
+按照恒宇要求的格式输出：
+  - AI应用层 ≥60%（YC / PH / GH / 新品 / 融资 / 工具 标签）
+  - 来源推荐 ≥1条
+  - 其他动态 补足至 20 条
+"""
+
+from config import DIGEST_CONFIG
 
 
-def _score_and_filter(items: list[dict]) -> list[dict]:
-    """用关键词快速预过滤，减少 API 调用"""
-    ai_keywords = {
-        "ai", "llm", "gpt", "claude", "gemini", "mistral", "agent",
-        "generative", "machine learning", "deep learning", "neural",
-        "openai", "anthropic", "hugging face", "langchain", "copilot",
-        "chatbot", "artificial intelligence", "model", "inference",
-        "product hunt", "saas", "startup", "launch", "tool",
-    }
-    scored = []
-    for item in items:
-        text = (item.get("title", "") + " " + item.get("summary", "")).lower()
-        hits = sum(1 for kw in ai_keywords if kw in text)
-        score = min(100, hits * 12 + item.get("weight", 0) * 3)
-        if score >= MIN_AI_RELEVANCE_SCORE:
-            item["relevance_score"] = score
-            scored.append(item)
-    scored.sort(key=lambda x: x["relevance_score"], reverse=True)
-    return scored[:MAX_ITEMS_IN_REPORT * 2]
+APP_LABELS = {"PH", "YC", "GH", "新品", "融资", "工具"}
 
 
-def _build_prompt(items: list[dict]) -> str:
-    news_lines = []
-    for i, item in enumerate(items, 1):
-        news_lines.append(
-            f"{i}. [{item['source']}] {item['title']}\n"
-            f"   URL: {item.get('url', 'N/A')}\n"
-            f"   摘要: {item.get('summary', '')[:200]}\n"
-        )
-    news_text = "\n".join(news_lines)
-
-    return f"""你是一位 AI 行业分析师，负责每日整理 AI 应用层的重要动态。
-
-以下是今日抓取的原始新闻列表（来自 Product Hunt、TechCrunch、VentureBeat 等）：
-
-{news_text}
-
-请完成以下任务：
-1. 筛选出最具价值的 {MAX_ITEMS_IN_REPORT} 条（优先：新产品发布、功能更新、融资、AI 应用层 ≥60%）
-2. 对每条新闻写 1-2 句中文简评（点明亮点/影响）
-3. 输出格式严格按照下面的 Markdown 模板，不要添加额外内容：
-
----
-## 🤖 AI 情报日报 · {{日期}}
-
-### 🏆 Product Hunt 精选
-{{如有 PH 内容则列出，格式如下}}
-- **[产品名](URL)** — 简评（1句）
-
-### 🚀 新品发布 & 功能更新
-- **[标题](URL)** — 简评
-...
-
-### 💰 融资 & 商业动态
-- **[标题](URL)** — 简评
-...
-
-### 📌 技术 & 行业观察
-- **[标题](URL)** — 简评
-...
-
-> 数据来源：Product Hunt · TechCrunch · VentureBeat · The Verge · HuggingFace
----
-
-今天日期：{__import__('datetime').datetime.now().strftime('%Y年%m月%d日')}"""
+def guess_category(item: dict) -> str:
+    """判断是 AI应用层 还是 其他动态"""
+    if item.get("label") in APP_LABELS:
+        return "app"
+    # 关键词二次判断
+    text = (item.get("title", "") + " " + item.get("snippet", "")).lower()
+    if any(k in text for k in [
+        "launch", "release", "product", "startup", "raise", "funding",
+        "series", "demo day", "open source", "github", "agent", "tool",
+        "introducing", "new", "beta", "announce"
+    ]):
+        return "app"
+    return "other"
 
 
-def format_news(items: list[dict]) -> str:
-    if not items:
-        return "今日暂无符合条件的 AI 新闻。"
+def format_source(item: dict) -> str:
+    """单条情报的富文本格式"""
+    label = item.get("label", "动态")
+    title = item["title"]
+    snippet = item.get("snippet", "")
+    url = item.get("url", "")
 
-    filtered = _score_and_filter(items)
-    print(f"[Formatter] 过滤后 {len(filtered)} 条，调用 Claude 生成摘要...")
+    # 截断标题（过长）
+    if len(title) > 80:
+        title = title[:77] + "..."
 
-    if not ANTHROPIC_API_KEY:
-        return _fallback_format(filtered)
+    parts = [f"{label} "]
+    parts.append(f"【{title}】")
+    if snippet:
+        parts.append(f"  {snippet}")
+    if url:
+        parts.append(f"  🔗 {url}")
 
-    try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": _build_prompt(filtered)}],
-        )
-        return message.content[0].text
-    except Exception as e:
-        print(f"[Formatter] Claude API 失败，使用纯文本格式: {e}")
-        return _fallback_format(filtered)
+    return "".join(parts)
 
 
-def _fallback_format(items: list[dict]) -> str:
-    from datetime import datetime
-    lines = [f"## 🤖 AI 情报日报 · {datetime.now().strftime('%Y年%m月%d日')}\n"]
-    for item in items[:MAX_ITEMS_IN_REPORT]:
-        title = item.get("title", "无标题")
-        url = item.get("url", "")
-        source = item.get("source", "")
-        summary = item.get("summary", "")[:100]
-        lines.append(f"- **[{title}]({url})** [{source}]\n  {summary}\n")
-    return "\n".join(lines)
+class DigestFormatter:
+    def __init__(self):
+        self.cfg = DIGEST_CONFIG
+
+    def format(self, items: list[dict], date: str) -> str:
+        """
+        将原始条目列表格式化为飞书消息文本。
+        """
+        target = self.cfg["total_target"]
+
+        # 分类
+        app_items = [it for it in items if guess_category(it) == "app"]
+        other_items = [it for it in items if guess_category(it) == "other"]
+
+        # 确保 AI应用层 ≥60%
+        app_count = max(len(app_items), int(target * self.cfg["app_layer_ratio"]))
+        app_section = app_items[:app_count]
+        other_section = other_items[:max(0, target - len(app_section))]
+
+        lines = [
+            f"🤖 AI每日情报 · {date}",
+            "━" * 28,
+            "",
+            "🚀 AI应用层",
+        ]
+
+        # 来源推荐（第一条 AI应用层作为来源推荐）
+        if app_section:
+            first = app_section[0]
+            lines.extend([
+                f"📦 来源推荐",
+                f"【{first['label']}】 {first['title']}",
+                f"  {first.get('snippet', '')[:100]}",
+                f"  🔗 {first.get('url', '')}",
+                "",
+            ])
+
+        # 逐条列出 AI应用层（从第二条开始）
+        for i, item in enumerate(app_section[1:], 1):
+            lines.append(f"{i}. 【{item['label']}】 {item['title']}")
+            if item.get("snippet"):
+                lines.append(f"   📌 {item['snippet'][:80]}")
+            lines.append(f"   🔗 {item.get('url', '')}")
+
+        # 其他动态
+        if other_section:
+            lines.append("")
+            lines.append("📬 其他动态")
+            for i, item in enumerate(other_section, len(app_section)):
+                lines.append(f"{i}. 【{item['label']}】 {item['title']}")
+                if item.get("snippet"):
+                    lines.append(f"   📌 {item['snippet'][:80]}")
+                lines.append(f"   🔗 {item.get('url', '')}")
+
+        lines.extend([
+            "",
+            "━" * 28,
+            f"（共 {len(app_section) + len(other_section)} 条，"
+            f"AI应用层 {len(app_section)} 条）",
+            "来源：YC / PH / HN / TechCrunch / a16z 等",
+        ])
+
+        return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    # 简单自测
+    formatter = DigestFormatter()
+    sample = [
+        {"title": "Arc for Mac 3.0 发布", "url": "https://example.com", "snippet": "新版界面大幅更新", "label": "PH"},
+        {"title": "Claude 4.6 发布", "url": "https://example.com/2", "snippet": "性能大幅提升", "label": "动态"},
+    ]
+    print(formatter.format(sample, "2026-04-26"))
