@@ -1,87 +1,91 @@
-# AI News Bot — Diggest AI 情报日报
+# 🤖 AI 每日情报机器人
 
-每日自动抓取 Product Hunt、TechCrunch、VentureBeat 等来源的 AI 新闻，用 Claude 生成中文简评，发送到飞书群。
+自动抓取 AI 创投 + 技术动态，每天推送到飞书。
+
+## 功能特点
+
+- 🌐 多来源搜索：YC / Product Hunt / GitHub Trending / TechCrunch / 行业媒体
+- 📊 智能分类：AI应用层 ≥60%，其余补足至20条
+- 🏷️ 自动标签：YC / PH / GH / 新品 / 融资 / 工具
+- 📱 飞书推送：支持 Webhook 或开放平台 App 两种方式
+- ⏰ 定时任务：Linux crontab 一键配置
+
+## 快速开始
+
+### 1. 克隆 + 安装
+
+```bash
+git clone <your-repo-url> ai-news-bot
+cd ai-news-bot
+pip install -r requirements.txt
+```
+
+### 2. 配置
+
+**方式 A：飞书 Webhook（最简单）**
+
+在飞书群聊中添加"自定义机器人"（群设置 → 群机器人 → 添加机器人），
+复制 Webhook URL，填入 `config.py` 的 `webhook_url` 字段。
+
+**方式 B：飞书开放平台 App**
+
+在 [飞书开放平台](https://open.feishu.cn/app) 创建应用，
+获取 `App ID` 和 `App Secret`，填入 `config.py`。
+
+### 3. 配置搜索偏好
+
+编辑 `src/config.py` 中的 `SEARCH_QUERIES` 列表，调整：
+- Product Hunt 权重 → 增加 PH 相关查询词
+- YC 权重 → 增加 Y Combinator 相关查询词
+
+### 4. 测试
+
+```bash
+python src/feishu.py          # 测试飞书连通性
+python src/main.py --test     # 发送测试消息
+python src/main.py --dry      # 仅生成内容，不发送
+```
+
+### 5. 定时任务
+
+```bash
+# 每天早上 9 点（北京时间）执行
+0 9 * * * cd /path/to/ai-news-bot && python src/main.py >> logs/cron.log 2>&1
+```
 
 ## 目录结构
 
 ```
-Diggest-AI-news-Tool/
+ai-news-bot/
 ├── README.md
 ├── requirements.txt
-├── .env.example        # 环境变量模板
-├── config.py           # ⚡ 主配置（搜索词 / RSS / 飞书凭证）
+├── .env.example
+├── config.py              ← 主配置文件
 └── src/
-    ├── main.py         # 入口（直接运行 or --cron 定时模式）
-    ├── searcher.py     # 多来源抓取（RSS + 搜索）
-    ├── formatter.py    # Claude AI 摘要 & 格式化
-    └── feishu.py       # 飞书发送（Webhook / App 两种）
+    ├── main.py            ← 入口，cron 调用这个
+    ├── searcher.py        ← 多来源搜索
+    ├── formatter.py        ← 情报格式化
+    └── feishu.py           ← 飞书发送
 ```
 
-## 快速开始
+## 与 OpenClaw 集成
 
-### 1. 安装依赖
+如果部署在运行 OpenClaw 的同一台机器上，`searcher.py` 会自动
+通过本地 MCP 端口（localhost:3100）加速搜索，无需额外配置。
 
-```bash
-pip install -r requirements.txt
+## 自定义信源
+
+在 `config.py` 中编辑 `SEARCH_QUERIES`，格式：
+
+```python
+("搜索关键词", 返回条数),
 ```
 
-### 2. 配置环境变量
+## Product Hunt 权重调整
 
-```bash
-cp .env.example .env
-# 编辑 .env，填入飞书 Webhook 和 Anthropic API Key
-```
+恒宇要求 Product Hunt 权重上调。当前配置已包含：
+- Product Hunt AI 产品热门
+- Product Hunt AI 工具发布
+- YC AI 初创公司
 
-### 3. 配置飞书机器人
-
-在飞书群里：**设置 → 群机器人 → 添加机器人 → 自定义机器人** → 复制 Webhook URL → 粘贴到 `.env`
-
-### 4. 运行
-
-```bash
-# 立即运行一次（测试用）
-python src/main.py
-
-# 定时模式（每天 09:00 自动运行）
-python src/main.py --cron
-```
-
-## 定时任务（服务器 Cron）
-
-```cron
-0 9 * * * cd /path/to/Diggest-AI-news-Tool && python src/main.py >> logs/cron.log 2>&1
-```
-
-## 配置说明
-
-在 `config.py` 中可以调整：
-
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `SEARCH_QUERIES` | 搜索词列表（weight 越高越靠前） | 10 条，PH 权重最高 |
-| `RSS_FEEDS` | RSS 订阅源 | 6 个主流 AI 媒体 |
-| `MAX_ITEMS_IN_REPORT` | 每日报告最多条目数 | 15 |
-| `LOOKBACK_HOURS` | 只取过去 N 小时的新闻 | 24 |
-| `SEND_HOUR` | 定时发送时间（24h） | 9 |
-| `MIN_AI_RELEVANCE_SCORE` | AI 相关性最低分（0-100） | 60 |
-
-## 新闻来源权重
-
-| 来源 | 权重 |
-|------|------|
-| Product Hunt | 10 ⭐ |
-| AI Weekly | 8 |
-| TechCrunch AI | 7 |
-| VentureBeat AI | 7 |
-| HuggingFace Blog | 7 |
-| The Verge AI | 6 |
-
-## 环境变量
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `FEISHU_WEBHOOK_URL` | ✅ | 飞书群机器人 Webhook |
-| `ANTHROPIC_API_KEY` | 推荐 | Claude API，无则降级为纯文本格式 |
-| `FEISHU_APP_ID` | 可选 | 飞书应用方式（替代 Webhook） |
-| `FEISHU_APP_SECRET` | 可选 | 飞书应用方式 |
-| `FEISHU_CHAT_ID` | 可选 | 飞书应用方式目标群 ID |
+如需进一步上调，增加 PH 相关查询词在列表中的比重即可。
