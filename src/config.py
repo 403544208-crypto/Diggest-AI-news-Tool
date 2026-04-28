@@ -63,6 +63,9 @@ DIGEST_CONFIG = {
     "label_tool": "工具",
     "label_new": "新品",
     "label_fund": "融资",
+    # ── 去重配置 ────────────────────────────────────────
+    "dedup_window_days": 30,   # 30 天内不重复推送同一 URL
+    "history_file": "data/published_history.json",
 }
 
 # ── 输出格式 ───────────────────────────────────────────────────────────────
