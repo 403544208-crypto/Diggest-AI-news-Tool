@@ -4,6 +4,7 @@ AI 情报格式化器
 
 按照恒宇要求的格式输出：
   - AI应用层 ≥60%（YC / PH / GH / 新品 / 融资 / 工具 标签）
+  - 金融/资本市场动态（金融、高管交易、并购、IPO 标签）
   - 来源推荐 ≥1条
   - 其他动态 补足至 20 条
 """
@@ -12,10 +13,13 @@ from config import DIGEST_CONFIG
 
 
 APP_LABELS = {"PH", "YC", "GH", "新品", "融资", "工具"}
+FINANCE_LABELS = {"金融", "高管交易", "并购", "IPO"}
 
 
 def guess_category(item: dict) -> str:
-    """判断是 AI应用层 还是 其他动态"""
+    """判断是 AI应用层、金融/资本市场 还是 其他动态"""
+    if item.get("label") in FINANCE_LABELS:
+        return "finance"
     if item.get("label") in APP_LABELS:
         return "app"
     # 关键词二次判断
@@ -61,22 +65,32 @@ class DigestFormatter:
         target = self.cfg["total_target"]
 
         # 分类
-        app_items = [it for it in items if guess_category(it) == "app"]
+        app_items   = [it for it in items if guess_category(it) == "app"]
+        finance_items = [it for it in items if guess_category(it) == "finance"]
         other_items = [it for it in items if guess_category(it) == "other"]
 
         # 确保 AI应用层 ≥60%
         app_count = max(len(app_items), int(target * self.cfg["app_layer_ratio"]))
-        app_section = app_items[:app_count]
-        other_section = other_items[:max(0, target - len(app_section))]
+
+        # 金融/资本市场：全部保留，最多占 5 条
+        finance_count = min(len(finance_items), 5)
+
+        # 取条
+        app_section     = app_items[:app_count]
+        finance_section = finance_items[:finance_count]
+        cap_other       = target - len(app_section) - len(finance_section)
+        other_section   = other_items[:max(0, cap_other)]
+
+        # 编号计数器
+        def enumerate_with_offset(section, start=1):
+            return enumerate(section, start)
 
         lines = [
             f"🤖 AI每日情报 · {date}",
             "━" * 28,
-            "",
-            "🚀 AI应用层",
         ]
 
-        # 来源推荐（第一条 AI应用层作为来源推荐）
+        # ── 来源推荐（第一条 AI应用层）──────────────────────────────────
         if app_section:
             first = app_section[0]
             lines.extend([
@@ -87,29 +101,42 @@ class DigestFormatter:
                 "",
             ])
 
-        # 逐条列出 AI应用层（从第二条开始）
-        for i, item in enumerate(app_section[1:], 1):
-            lines.append(f"{i}. 【{item['label']}】 {item['title']}")
+        # ── AI应用层 ─────────────────────────────────────────────────────
+        lines.append("🚀 AI应用层")
+        for item in app_section[1:]:
+            lines.append(f"【{item['label']}】 {item['title']}")
             if item.get("snippet"):
-                lines.append(f"   📌 {item['snippet'][:80]}")
-            lines.append(f"   🔗 {item.get('url', '')}")
+                lines.append(f"  📌 {item['snippet'][:100]}")
+            lines.append(f"  🔗 {item.get('url', '')}")
+        lines.append("")
 
-        # 其他动态
-        if other_section:
-            lines.append("")
-            lines.append("📬 其他动态")
-            for i, item in enumerate(other_section, len(app_section)):
-                lines.append(f"{i}. 【{item['label']}】 {item['title']}")
+        # ── 金融/资本市场动态 ─────────────────────────────────────────────
+        if finance_section:
+            lines.append("💹 金融/资本市场")
+            for item in finance_section:
+                lines.append(f"【{item['label']}】 {item['title']}")
                 if item.get("snippet"):
-                    lines.append(f"   📌 {item['snippet'][:80]}")
-                lines.append(f"   🔗 {item.get('url', '')}")
+                    lines.append(f"  📌 {item['snippet'][:100]}")
+                lines.append(f"  🔗 {item.get('url', '')}")
+            lines.append("")
 
+        # ── 其他动态 ─────────────────────────────────────────────────────
+        if other_section:
+            lines.append("📬 其他动态")
+            num = len(app_section) + len(finance_section) + 1
+            for item in other_section:
+                lines.append(f"【{item['label']}】 {item['title']}")
+                if item.get("snippet"):
+                    lines.append(f"  📌 {item['snippet'][:100]}")
+                lines.append(f"  🔗 {item.get('url', '')}")
+                num += 1
+
+        total = len(app_section) + len(finance_section) + len(other_section)
         lines.extend([
-            "",
             "━" * 28,
-            f"（共 {len(app_section) + len(other_section)} 条，"
-            f"AI应用层 {len(app_section)} 条）",
-            "来源：YC / PH / HN / TechCrunch / a16z 等",
+            f"（共 {total} 条，AI应用层 {len(app_section)} 条，"
+            f"金融 {len(finance_section)} 条）",
+            "来源：YC / PH / HN / TechCrunch / a16z / 金融媒体 等",
         ])
 
         return "\n".join(lines)
@@ -120,6 +147,7 @@ if __name__ == "__main__":
     formatter = DigestFormatter()
     sample = [
         {"title": "Arc for Mac 3.0 发布", "url": "https://example.com", "snippet": "新版界面大幅更新", "label": "PH"},
-        {"title": "Claude 4.6 发布", "url": "https://example.com/2", "snippet": "性能大幅提升", "label": "动态"},
+        {"title": "Nvidia CEO Jensen Huang 出售股票 1.2 亿美元", "url": "https://example.com/2", "snippet": "SEC 文件披露", "label": "高管交易"},
+        {"title": "Claude 4.6 发布", "url": "https://example.com/3", "snippet": "性能大幅提升", "label": "动态"},
     ]
-    print(formatter.format(sample, "2026-04-26"))
+    print(formatter.format(sample, "2026-05-18"))
