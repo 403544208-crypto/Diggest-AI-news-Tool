@@ -9,12 +9,15 @@ SEARCH_QUERIES = [
     # AI 应用层（Product Hunt 方向）
     ("Product Hunt AI products trending 2026", 10),
     ("Product Hunt AI tools launched 2026", 8),
-    # Y Combinator AI Startups W26 2026", 8),
+    ("Y Combinator AI Startups W26 2026", 8),
     ("YC startup AI application 2026", 8),
     ("Y Combinator AI portfolio demo day 2026", 8),
     # GitHub Trending AI
     ("GitHub trending AI LLM open source 2026", 8),
     ("GitHub trending machine learning tools 2026", 6),
+    ("site:github.com trending 2026", 8),
+    ("GitHub go-to-github trending repositories April 2026", 8),
+    ("GitHub open source AI tools trending 2026", 7),
     # AI Agent & 应用层
     ("AI agent framework new release 2026", 8),
     ("LLM application startup product launch 2026", 8),
@@ -29,6 +32,25 @@ SEARCH_QUERIES = [
     # 基础设施
     ("NVIDIA AMD AI chip news 2026", 5),
     ("AI infrastructure data center investment 2026", 5),
+    # ── 金融·资本市场动态 ─────────────────────────────────
+    # 科技公司高管增减持（AI相关上市公司）
+    ("AI company CEO CFO sold shares stock 2026", 8),
+    ("tech executive bought sold stock June 2026", 8),
+    ("OpenAI Anthropic Google DeepMind executive stock 2026", 6),
+    # AI 上市公司最新融资/减持/回购
+    ("AI public company raised capital stock offering 2026", 6),
+    ("Nvidia CEO Jensen Huang sold stock 2026", 5),
+    ("Microsoft Apple Google executive stock sale 2026", 5),
+    # 风险投资机构新动态
+    ("venture capital fund AI startup investment 2026", 6),
+    ("a16z Sequoia Capital AI deal 2026", 6),
+    ("VC funding AI agent applications 2026", 6),
+    # 美股科技板块动态
+    ("NASDAQ AI tech stocks earnings 2026", 5),
+    ("S&P 500 AI semiconductor stocks news 2026", 5),
+    # 并购/IPO 动态
+    ("AI company acquisition merger 2026", 6),
+    ("AI startup IPO filing 2026", 6),
 ]
 
 # ── 飞书配置 ────────────────────────────────────────────────────────────────
@@ -54,7 +76,7 @@ RECIPIENTS = [
 # ── 格式化配置 ─────────────────────────────────────────────────────────────
 
 DIGEST_CONFIG = {
-    "total_target": 20,        # 目标总条数
+    "total_target": 20,        # 目标总条数 ← 已更新至20条
     "app_layer_min": 12,       # AI应用层最少条数
     "app_layer_ratio": 0.60,   # AI应用层占比 ≥60%
     "label_source": "PH",      # Product Hunt 标签
@@ -63,6 +85,13 @@ DIGEST_CONFIG = {
     "label_tool": "工具",
     "label_new": "新品",
     "label_fund": "融资",
+    "label_finance": "金融",   # 金融/资本市场标签
+    "label_exec": "高管交易", # 高管增减持标签
+    "label_mna": "并购",       # 并购标签
+    "label_ipo": "IPO",
+    # ── 去重配置 ────────────────────────────────────────
+    "dedup_window_days": 7,     # 7 天内不重复推送同一 URL（避免近一个月内重复新闻）
+    "history_file": "data/published_history.json",
 }
 
 # ── 输出格式 ───────────────────────────────────────────────────────────────
