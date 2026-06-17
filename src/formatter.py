@@ -14,16 +14,33 @@ from config import DIGEST_CONFIG
 
 APP_LABELS = {"PH", "YC", "GH", "新品", "融资", "工具"}
 FINANCE_LABELS = {"金融", "高管交易", "并购", "IPO"}
+BASE_MODEL_LABELS = {"基模"}
 
 
 def guess_category(item: dict) -> str:
-    """判断是 AI应用层、金融/资本市场 还是 其他动态"""
+    """判断是 AI应用层、基座模型研究、金融/资本市场 还是 其他动态"""
     if item.get("label") in FINANCE_LABELS:
         return "finance"
+    if item.get("label") in BASE_MODEL_LABELS:
+        return "base_model"
     if item.get("label") in APP_LABELS:
         return "app"
     # 关键词二次判断
     text = (item.get("title", "") + " " + item.get("snippet", "")).lower()
+    if any(k in text for k in [
+        "arxiv", "research", "paper", "technical report", "benchmark",
+        "swe-bench", "mmlu", "arc-agi", "neurips", "icml", "iclr", "acl",
+        "pretraining", "pre-training", "fine-tuning", "rlhf", "rlaif",
+        "reasoning model", "test-time compute", "scaling", "moe",
+        "long context", "attention", "transformer", "state space", "mamba",
+        "diffusion model", "architecture", "sparse", "mixture of experts",
+        "synthetic data", "post-training", "interpretability", "alignment",
+        "openai", "anthropic", "deepmind", "meta ai", "fair", "mistral", "xai",
+        "gpt-", "claude", "gemini", "llama", "grok", "qwen", "deepseek",
+        "glm-", "kimi", "doubao", "ernie", "wenxin", "minimax",
+        "evaluation"
+    ]):
+        return "base_model"
     if any(k in text for k in [
         "launch", "release", "product", "startup", "raise", "funding",
         "series", "demo day", "open source", "github", "agent", "tool",
@@ -65,25 +82,24 @@ class DigestFormatter:
         target = self.cfg["total_target"]
 
         # 分类
-        app_items   = [it for it in items if guess_category(it) == "app"]
-        finance_items = [it for it in items if guess_category(it) == "finance"]
-        other_items = [it for it in items if guess_category(it) == "other"]
+        app_items      = [it for it in items if guess_category(it) == "app"]
+        base_items     = [it for it in items if guess_category(it) == "base_model"]
+        finance_items  = [it for it in items if guess_category(it) == "finance"]
+        other_items    = [it for it in items if guess_category(it) == "other"]
 
-        # 确保 AI应用层 ≥60%
-        app_count = max(len(app_items), int(target * self.cfg["app_layer_ratio"]))
-
-        # 金融/资本市场：全部保留，最多占 5 条
+        # 配额（应用层 ≥50%，基座模型 ≥25%）
+        app_min       = max(self.cfg.get("app_layer_min", 10), int(target * self.cfg.get("app_layer_ratio", 0.50)))
+        base_min      = max(self.cfg.get("base_model_min", 5), int(target * self.cfg.get("base_model_ratio", 0.25)))
+        app_count     = min(max(len(app_items), app_min), target - base_min)
+        base_count    = min(max(len(base_items), base_min), target - app_count)
         finance_count = min(len(finance_items), 5)
 
         # 取条
         app_section     = app_items[:app_count]
+        base_section    = base_items[:base_count]
         finance_section = finance_items[:finance_count]
-        cap_other       = target - len(app_section) - len(finance_section)
+        cap_other       = target - len(app_section) - len(base_section) - len(finance_section)
         other_section   = other_items[:max(0, cap_other)]
-
-        # 编号计数器
-        def enumerate_with_offset(section, start=1):
-            return enumerate(section, start)
 
         lines = [
             f"🤖 AI每日情报 · {date}",
@@ -110,6 +126,16 @@ class DigestFormatter:
             lines.append(f"  🔗 {item.get('url', '')}")
         lines.append("")
 
+        # ── 基座模型研究（新增 section）────────────────────────
+        if base_section:
+            lines.append("🧪 基座模型研究")
+            for item in base_section:
+                lines.append(f"【{item['label']}】 {item['title']}")
+                if item.get("snippet"):
+                    lines.append(f"  📌 {item['snippet'][:100]}")
+                lines.append(f"  🔗 {item.get('url', '')}")
+            lines.append("")
+
         # ── 金融/资本市场动态 ─────────────────────────────────────────────
         if finance_section:
             lines.append("💹 金融/资本市场")
@@ -123,20 +149,19 @@ class DigestFormatter:
         # ── 其他动态 ─────────────────────────────────────────────────────
         if other_section:
             lines.append("📬 其他动态")
-            num = len(app_section) + len(finance_section) + 1
             for item in other_section:
                 lines.append(f"【{item['label']}】 {item['title']}")
                 if item.get("snippet"):
                     lines.append(f"  📌 {item['snippet'][:100]}")
                 lines.append(f"  🔗 {item.get('url', '')}")
-                num += 1
 
-        total = len(app_section) + len(finance_section) + len(other_section)
+        total = len(app_section) + len(base_section) + len(finance_section) + len(other_section)
         lines.extend([
             "━" * 28,
             f"（共 {total} 条，AI应用层 {len(app_section)} 条，"
+            f"基座模型 {len(base_section)} 条，"
             f"金融 {len(finance_section)} 条）",
-            "来源：YC / PH / HN / TechCrunch / a16z / 金融媒体 等",
+            "来源：YC / PH / HN / TechCrunch / a16z / 金融媒体 / 学术顶会 等",
         ])
 
         return "\n".join(lines)
