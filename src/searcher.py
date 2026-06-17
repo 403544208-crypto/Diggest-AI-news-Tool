@@ -10,6 +10,8 @@ searcher.py
 """
 
 import subprocess, json, time, random, os, sys
+import re
+import difflib
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
@@ -82,13 +84,62 @@ def _guess_label(item: dict) -> str:
         return "GH"
     if "yc " in text or "y combinator" in text or "demo day" in text:
         return "YC"
-    if any(k in text for k in ["launch", "release", "new", "introducing"]):
-        return "新品"
     if any(k in text for k in ["raise", "funding", "series", "round", "invest"]):
         return "融资"
     if any(k in text for k in ["open source", "github", "library", "framework"]):
         return "工具"
+    # ── 基座模型研究关键词（最高优先级之一）──────────────
+    if any(k in text for k in [
+        "arxiv", "paper", "research", "technical report", "benchmark",
+        "swe-bench", "mmlu", "arc-agi", "neurips", "icml", "iclr", "acl",
+        "pretraining", "pre-training", "fine-tuning", "rlhf", "rlaif",
+        "reasoning model", "test-time compute", "scaling", "moe",
+        "long context", "attention", "transformer", "state space", "mamba",
+        "diffusion model", "architecture", "sparse", "mixture of experts",
+        "synthetic data", "post-training", "rl on",
+        "openai", "anthropic", "deepmind", "meta ai", "fair", "mistral", "xai",
+        "gpt-", "claude", "gemini", "llama", "grok", "qwen", "deepseek",
+        "glm-", "kimi", "doubao", "ernie", "wenxin", "minimax",
+        "interpretability", "alignment", "evaluation"
+    ]):
+        return "基模"
+    if any(k in text for k in ["launch", "release", "new", "introducing"]):
+        return "新品"
     return "动态"
+
+
+def _normalize_title(title: str) -> str:
+    """规范化标题：去标点、转小写、去多余空白"""
+    if not title:
+        return ""
+    t = title.lower()
+    t = re.sub(r"[^\w\s\u4e00-\u9fff]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _title_similarity(a: str, b: str) -> float:
+    """计算两个标题的相似度（0-1）"""
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    return difflib.SequenceMatcher(None, na, nb).ratio()
+
+
+def dedup_by_title(items: list[dict], threshold: float = 0.75) -> list[dict]:
+    """按标题相似度去重，保留先出现的（相似度 >threshold 视为同一条）"""
+    kept: list[dict] = []
+    for it in items:
+        dup = False
+        for k in kept:
+            if _title_similarity(it.get("title", ""), k.get("title", "")) >= threshold:
+                dup = True
+                break
+        if not dup:
+            kept.append(it)
+    return kept
 
 
 class NewsSearcher:
