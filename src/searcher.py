@@ -14,6 +14,8 @@ import re
 import difflib
 from urllib.request import Request, urlopen
 from urllib.error import URLError
+sys.path.insert(0, os.path.dirname(__file__))
+from link_health import fix_dead_urls
 
 LOCAL_MCP = "http://localhost:3100/mcp/batch_web_search"
 TIMEOUT = 25  # 秒
@@ -23,10 +25,13 @@ def _search_via_mcp_http(queries: list[tuple[str, int]]) -> list[dict]:
     """
     通过 OpenClaw 本地 MCP HTTP 端口搜索。
     queries: [(query, num_results), ...]
+    恒宇要求:新闻时效 ≤5天,使用 dataRange="d" (search API 的 d=day 表示最近 24h,
+    web_search 实际接受 h/d/w/m/y,h=hour,d=day,w=week。
+    我们用 w 表示最近 7 天,然后在 formatter 层做 ≥5 天过滤。
     """
     payload = json.dumps({
         "queries": [
-            {"query": q, "numResults": n, "dataRange": "m"}
+            {"query": q, "numResults": n, "dataRange": "w"}
             for q, n in queries
         ]
     }).encode("utf-8")
@@ -75,6 +80,38 @@ def _search_via_subprocess(queries: list[tuple[str, int]]) -> list[dict]:
     return results
 
 
+# ── 国产大模型厂商识别（恒宇 2026-10-29 指定最高权重）──────────────────
+DOMESTIC_VENDORS = [
+    "智谱", "zhipu", "glm", "minimax", "深度求索", "deepseek",
+    "月之暗面", "moonshot", "kimi", "豆包", "doubao", "字节跳动", "bytedance",
+    "通义", "qwen", "千问", "文心", "ernie", "百度", "混元", "hunyuan",
+    "阶跃", "stepfun", "面壁", "minicpm", "零一万物", "百川", "baichuan",
+    "生数", "vidu", "海螺", "skywork", "书生", "internlm", "商汤", "sensenova",
+]
+
+# 商业化硬数据信号词（出现即说明这条有“数字”，优先级更高）
+COMMERCIAL_SIGNALS = [
+    "arr", "revenue", "收入", "营收", "同比", "环比", "增速", "guidance",
+    "指引", "财报", "业绩", "定价", "价格", "降价", "涨价", "token 价",
+    "估值", "融资", "ipo", "上市", "市值", "股价", "客户数", "付费",
+    "席位", "渗透率", "利润率", "毛利", "bedrock", "vertex", "azure",
+    "aws", "云平台", "接入",
+    "token", "每百万", "/百万", "百万 token", "订阅", "免费额度", "降价",
+    "月活", "日活", "付费用户", "合作", "上线", "接入",
+    "募资", "美元", "亿元", "万美元", "亿美元", "亿",
+]
+
+
+def _is_domestic_vendor(text: str) -> bool:
+    """是否属于国产大模型厂商（公司名命中）"""
+    return any(k in text for k in DOMESTIC_VENDORS)
+
+
+def _has_commercial_signal(text: str) -> bool:
+    """是否含商业化硬数据信号（ARR/定价/财报/生态接入等）"""
+    return any(k in text for k in COMMERCIAL_SIGNALS)
+
+
 def _guess_label(item: dict) -> str:
     """根据标题/摘要关键词自动打标签"""
     text = (item.get("title", "") + " " + item.get("snippet", "")).lower()
@@ -84,6 +121,10 @@ def _guess_label(item: dict) -> str:
         return "GH"
     if "yc " in text or "y combinator" in text or "demo day" in text:
         return "YC"
+    # ── 国产厂商（恒宇 2026-10-29 指定最高权重）────────────────────
+    if _is_domestic_vendor(text):
+        # 同时含商业化数字 → 单独标记，格式化时排在最前
+        return "国产商业化" if _has_commercial_signal(text) else "国产"
     if any(k in text for k in ["raise", "funding", "series", "round", "invest"]):
         return "融资"
     if any(k in text for k in ["open source", "github", "library", "framework"]):
@@ -160,6 +201,9 @@ class NewsSearcher:
             # 回退到 subprocess
             raw = _search_via_subprocess(queries)
 
+        # 链接健康检查 + 自动修复（恒宇 2026-08-24 反馈部分 link 404）
+        raw = fix_dead_urls(raw)
+
         out = []
         for item in raw:
             out.append({
@@ -168,6 +212,8 @@ class NewsSearcher:
                 "snippet": item.get("snippet", "")[:150].strip(),
                 "source": item.get("source", "web"),
                 "label": _guess_label(item),
+                "url_fixed": bool(item.get("_url_fixed")),
+                "url_dead": bool(item.get("_url_dead")),
             })
         return out
 
